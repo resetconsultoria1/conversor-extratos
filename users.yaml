@@ -1,0 +1,21 @@
+usuarios:
+  bruna:
+    ativo: true
+    nome: Bruna
+    perfil: admin
+    senha_hash: sha256:c95817a30f8e653e1a3d52a71a0da53d742d53d84b8954389700c06c06684c82
+  dani:
+    ativo: true
+    nome: Dani
+    perfil: admin
+    senha_hash: sha256:db96f9a4e73f39c88edd56be2cbd90b2d9aaaaf12e3440ca53d5dc2bb10af29f
+  debora:
+    ativo: true
+    nome: Débora
+    perfil: padrao
+    senha_hash: sha256:16cfcc945d602f24ba8779feed754459ce556dc240ad4aede78cf8453142f8b9
+  karol:
+    ativo: true
+    nome: Karol
+    perfil: padrao
+    senha_hash: sha256:6958c3105cd61cf66a30450ef15fd0edfc2e19bc05e68caca8539c5d7c809707
