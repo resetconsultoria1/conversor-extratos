@@ -15,6 +15,7 @@ import io
 import os
 import re
 import json
+import time
 import base64
 import hashlib
 from datetime import datetime
@@ -32,9 +33,11 @@ st.set_page_config(page_title="Conversor de extratos", page_icon="📄", layout=
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "users.yaml")
 
-MODELO_CLAUDE   = "claude-sonnet-5"   # modelo usado para ler o PDF
-PAGINAS_POR_LOTE = 5                  # o PDF e enviado a IA em lotes de N paginas
-MAX_TOKENS_SAIDA = 16000
+MODELO_CLAUDE       = "claude-sonnet-5"   # modelo usado para ler o PDF
+CHUNK_PAGINAS_TEXTO = 6                   # PDF com texto: paginas por chamada a IA
+CHUNK_PAGINAS_PDF   = 3                   # PDF escaneado (imagem): paginas por chamada
+MAX_TOKENS_SAIDA    = 32000
+TENTATIVAS_LOTE     = 3                   # re-tentativas por lote antes de desistir
 
 CABECALHO = ["Data", "Descrição", "Valor", "Obs"]
 
@@ -228,34 +231,40 @@ Regras:
 """
 
 
-def _split_pdf(pdf_bytes, paginas_por_lote):
-    """Divide o PDF em lotes de N paginas. Retorna lista de bytes (PDFs menores)."""
+def _paginas_texto(pdf_bytes):
+    """Extrai o texto de cada pagina. Retorna lista de strings (ou [] se nao der)."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        return [(p.extract_text() or "") for p in reader.pages]
+    except Exception:
+        return []
+
+
+def _chunks_pdf_bytes(pdf_bytes, n_por_chunk):
+    """Divide o PDF em PDFs menores. Retorna lista de (rotulo, bytes)."""
     try:
         from pypdf import PdfReader, PdfWriter
-    except Exception:
-        return [pdf_bytes]  # sem pypdf: manda o arquivo inteiro
-    try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
     except Exception:
-        return [pdf_bytes]
+        return [("arquivo inteiro", pdf_bytes)]
     n = len(reader.pages)
-    if n <= paginas_por_lote:
-        return [pdf_bytes]
-    lotes = []
-    for ini in range(0, n, paginas_por_lote):
+    out = []
+    for ini in range(0, n, n_por_chunk):
+        fim = min(ini + n_por_chunk, n)
         w = PdfWriter()
-        for i in range(ini, min(ini + paginas_por_lote, n)):
+        for i in range(ini, fim):
             w.add_page(reader.pages[i])
         buf = io.BytesIO()
         w.write(buf)
-        lotes.append(buf.getvalue())
-    return lotes
+        out.append((f"páginas {ini + 1}-{fim}", buf.getvalue()))
+    return out or [("arquivo inteiro", pdf_bytes)]
 
 
 def _extrair_json(texto):
     texto = texto.strip()
-    texto = re.sub(r"^```(?:json)?", "", texto).strip()
-    texto = re.sub(r"```$", "", texto).strip()
+    texto = re.sub(r"^```(?:json)?\s*", "", texto)
+    texto = re.sub(r"\s*```$", "", texto).strip()
     try:
         return json.loads(texto)
     except Exception:
@@ -265,8 +274,17 @@ def _extrair_json(texto):
         try:
             return json.loads(m.group(0))
         except Exception:
-            return {}
-    return {}
+            pass
+    # salvamento: recupera objetos soltos de uma resposta truncada
+    objs = []
+    for pedaco in re.findall(r"\{[^{}]*\}", texto, re.DOTALL):
+        try:
+            o = json.loads(pedaco)
+            if "valor" in o or "data" in o:
+                objs.append(o)
+        except Exception:
+            continue
+    return {"transacoes": objs}
 
 
 def _get_api_key():
@@ -278,6 +296,31 @@ def _get_api_key():
     return os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
+def _lote_claude(client, blocks, rotulo):
+    """Chama a IA para um lote (com streaming e re-tentativas).
+    Retorna (transacoes, observacao_de_erro)."""
+    ultimo = ""
+    for tentativa in range(1, TENTATIVAS_LOTE + 1):
+        try:
+            with client.messages.stream(
+                model=MODELO_CLAUDE,
+                max_tokens=MAX_TOKENS_SAIDA,
+                messages=[{"role": "user", "content": blocks}],
+            ) as stream:
+                msg = stream.get_final_message()
+            txt = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+            dados = _extrair_json(txt)
+            trans = dados.get("transacoes", []) if isinstance(dados, dict) else []
+            if msg.stop_reason == "max_tokens":
+                return trans, (f"{rotulo}: resposta muito longa — parte dos lançamentos "
+                               f"pode ter ficado de fora (diminua CHUNK_PAGINAS_TEXTO no app).")
+            return trans, ""
+        except Exception as e:
+            ultimo = (str(e).splitlines() or [repr(e)])[0][:180]
+            time.sleep(2 * tentativa)
+    return [], f"{rotulo}: falhou após {TENTATIVAS_LOTE} tentativas — {ultimo}"
+
+
 def ler_pdf(pdf_bytes, progresso=None):
     api_key = _get_api_key()
     if not api_key:
@@ -286,36 +329,58 @@ def ler_pdf(pdf_bytes, progresso=None):
             "Adicione ANTHROPIC_API_KEY nos Secrets do app (veja o README)."
         )
     import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=600.0)
 
-    lotes = _split_pdf(pdf_bytes, PAGINAS_POR_LOTE)
-    todas = []
+    def _rodar_modo_texto(paginas):
+        n = len(paginas)
+        lotes = [(i, min(i + CHUNK_PAGINAS_TEXTO, n)) for i in range(0, n, CHUNK_PAGINAS_TEXTO)]
+        todas, falhas = [], []
+        for k, (a, b) in enumerate(lotes, 1):
+            if progresso:
+                progresso(k, len(lotes))
+            corpo = "\n\n".join(f"[página {a + j + 1}]\n{paginas[a + j]}" for j in range(b - a))
+            blocks = [{"type": "text", "text": PROMPT_EXTRACAO + "\n\n=== EXTRATO ===\n" + corpo}]
+            trans, obs = _lote_claude(client, blocks, f"páginas {a + 1}-{b}")
+            todas += trans
+            if obs:
+                falhas.append(obs)
+        return todas, falhas
+
+    def _rodar_modo_pdf(pdf_bytes):
+        lotes = _chunks_pdf_bytes(pdf_bytes, CHUNK_PAGINAS_PDF)
+        todas, falhas = [], []
+        for k, (rot, by) in enumerate(lotes, 1):
+            if progresso:
+                progresso(k, len(lotes))
+            b64 = base64.standard_b64encode(by).decode()
+            blocks = [
+                {"type": "document",
+                 "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                {"type": "text", "text": PROMPT_EXTRACAO},
+            ]
+            trans, obs = _lote_claude(client, blocks, rot)
+            todas += trans
+            if obs:
+                falhas.append(obs)
+        return todas, falhas
+
+    paginas = _paginas_texto(pdf_bytes)
+    media_chars = (sum(len(p.strip()) for p in paginas) / len(paginas)) if paginas else 0
+
+    if media_chars > 120:                       # PDF com texto (rápido e barato)
+        todas, falhas = _rodar_modo_texto(paginas)
+        if not todas:                           # deu ruim -> tenta como PDF escaneado
+            todas, falhas = _rodar_modo_pdf(pdf_bytes)
+    else:                                        # PDF escaneado (imagem)
+        todas, falhas = _rodar_modo_pdf(pdf_bytes)
+
     avisos = []
-    for idx, lote in enumerate(lotes, 1):
-        if progresso:
-            progresso(idx, len(lotes))
-        b64 = base64.standard_b64encode(lote).decode()
-        resp = client.messages.create(
-            model=MODELO_CLAUDE,
-            max_tokens=MAX_TOKENS_SAIDA,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "document",
-                     "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
-                    {"type": "text", "text": PROMPT_EXTRACAO},
-                ],
-            }],
-        )
-        if resp.stop_reason == "max_tokens":
-            avisos.append(f"Lote {idx}: resposta muito longa, pode ter faltado lançamento. "
-                          f"Reduza PAGINAS_POR_LOTE.")
-        texto = "".join(bloco.text for bloco in resp.content if getattr(bloco, "type", "") == "text")
-        dados = _extrair_json(texto)
-        for t in dados.get("transacoes", []):
-            todas.append(t)
+    if falhas:
+        avisos.append("⚠️ Nem todo o extrato foi lido — os lançamentos abaixo podem estar "
+                      "INCOMPLETOS. Trechos com problema:\n\n- " + "\n- ".join(falhas)
+                      + "\n\nTente enviar de novo (às vezes resolve) ou divida o PDF em partes menores.")
 
-    # remove duplicata exata só na fronteira entre lotes (transação cortada pela quebra de página)
+    # remove duplicata exata só na fronteira entre lotes (lançamento cortado pela quebra de página)
     limpo = []
     for t in todas:
         chave = (t.get("data"), t.get("descricao"), t.get("valor"), t.get("tipo"))
@@ -440,9 +505,9 @@ def tela_principal():
                     transacoes = ler_ofx(dados_brutos)
                 avisos = []
             else:
-                barra = st.progress(0.0, text="Enviando o PDF para leitura…")
+                barra = st.progress(0.0, text="Lendo o PDF…")
                 def _p(i, n):
-                    barra.progress(i / n, text=f"Lendo o PDF… lote {i}/{n}")
+                    barra.progress(i / n, text=f"Lendo o PDF… parte {i} de {n}")
                 transacoes, avisos = ler_pdf(dados_brutos, progresso=_p)
                 barra.empty()
         except Exception as e:
@@ -456,7 +521,7 @@ def tela_principal():
 
     transacoes = st.session_state.get("transacoes", [])
     for a in st.session_state.get("avisos", []):
-        st.warning(a)
+        (st.error if a.startswith("⚠️") else st.warning)(a)
 
     if not transacoes:
         st.error("Nenhuma movimentação foi identificada. "

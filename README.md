@@ -99,8 +99,15 @@ O app decide sozinho qual usar:
 | Constante | Para quê |
 |-----------|----------|
 | `MODELO_CLAUDE` | modelo usado na leitura do PDF |
-| `PAGINAS_POR_LOTE` | quantas páginas vão por vez para a IA; diminua se um extrato muito grande vier incompleto |
+| `CHUNK_PAGINAS_TEXTO` | páginas por chamada quando o PDF tem texto (o caso normal, rápido); diminua se um extrato enorme vier incompleto |
+| `CHUNK_PAGINAS_PDF` | páginas por chamada quando o PDF é escaneado (imagem) |
 | `MAX_TOKENS_SAIDA` | teto de resposta por lote |
+| `TENTATIVAS_LOTE` | quantas vezes cada trecho é re-tentado antes de acusar falha |
+
+### Como o PDF é lido (desde a v2)
+1. O app tenta **extrair o texto** do PDF (rápido, barato). Só o texto vai para a IA, em lotes de `CHUNK_PAGINAS_TEXTO` páginas, com *streaming* e re-tentativa automática.
+2. Se o PDF não tiver texto (escaneado), cai no modo **imagem**: manda as páginas em PDF, em lotes menores.
+3. Se algum trecho falhar mesmo após as re-tentativas, aparece um **aviso vermelho** dizendo quais páginas ficaram de fora — o Excel não sai "silenciosamente incompleto".
 
 ## Limitações
 
