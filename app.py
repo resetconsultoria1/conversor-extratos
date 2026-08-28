@@ -272,10 +272,10 @@ def _extrair_json(texto):
 def _get_api_key():
     try:
         if "ANTHROPIC_API_KEY" in st.secrets:
-            return st.secrets["ANTHROPIC_API_KEY"]
+            return str(st.secrets["ANTHROPIC_API_KEY"]).strip()
     except Exception:
         pass
-    return os.environ.get("ANTHROPIC_API_KEY", "")
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
 def ler_pdf(pdf_bytes, progresso=None):
@@ -398,6 +398,8 @@ def gerar_excel(transacoes):
         ws.column_dimensions["D"].width = 20
         for row in ws.iter_rows(min_row=2, min_col=3, max_col=3):
             row[0].number_format = "#,##0.00"
+        ws.auto_filter.ref = f"A1:D{ws.max_row}"   # filtro na linha 1
+        ws.freeze_panes = "A2"                      # congela a linha 1
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -496,7 +498,7 @@ def tela_principal():
     st.download_button(
         f"⬇ Baixar Excel  ({nd} débitos · {nc} créditos)",
         data=xlsx,
-        file_name=f"{nome_base} - convertido.xlsx",
+        file_name=f"{nome_base}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         use_container_width=True,
