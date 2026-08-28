@@ -72,6 +72,32 @@ def precisa_configurar_senha():
     return any(not i.get("senha_hash") for i in carregar_usuarios().values())
 
 
+def senha_unica():
+    """Senha compartilhada definida nos Secrets do Streamlit (para repositorio publico).
+    Se estiver definida, o app usa login so com senha e ignora o users.yaml."""
+    try:
+        if "APP_PASSWORD" in st.secrets:
+            return str(st.secrets["APP_PASSWORD"])
+    except Exception:
+        pass
+    return os.environ.get("APP_PASSWORD", "")
+
+
+def tela_login_simples():
+    st.title("📄 Conversor de extratos")
+    st.caption("Ferramentas internas — acesso restrito")
+    with st.form("login_s"):
+        senha = st.text_input("Senha de acesso", type="password")
+        if st.form_submit_button("Entrar", type="primary", use_container_width=True):
+            if senha and senha == senha_unica():
+                st.session_state.logado = True
+                st.session_state.usuario = "equipe"
+                st.session_state.usuario_info = {"nome": "Equipe", "perfil": "padrao"}
+                st.rerun()
+            else:
+                st.error("Senha incorreta.")
+
+
 def tela_login():
     st.title("📄 Conversor de extratos")
     st.caption("Ferramentas internas — acesso restrito")
@@ -483,13 +509,21 @@ def tela_principal():
 if "logado" not in st.session_state:
     st.session_state.logado = False
 
-if not carregar_usuarios():
-    st.error("Arquivo `users.yaml` não encontrado ou vazio.")
-elif precisa_configurar_senha() and not st.session_state.logado:
-    tela_configurar_senha()
-    st.stop()
-
-if not st.session_state.logado:
-    tela_login()
+if senha_unica():
+    # modo senha unica (Secrets) -> serve para repositorio publico
+    if not st.session_state.logado:
+        tela_login_simples()
+    else:
+        tela_principal()
 else:
-    tela_principal()
+    # modo multiusuario (users.yaml) -> repositorio privado
+    if not carregar_usuarios():
+        st.error("Configure o acesso: defina `APP_PASSWORD` nos Secrets "
+                 "ou inclua um `users.yaml` no projeto.")
+    elif precisa_configurar_senha() and not st.session_state.logado:
+        tela_configurar_senha()
+        st.stop()
+    elif not st.session_state.logado:
+        tela_login()
+    else:
+        tela_principal()
