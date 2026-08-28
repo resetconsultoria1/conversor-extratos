@@ -28,29 +28,39 @@ duas abas usado nos acompanhamentos:
 Mesma receita do "App conf de classificações": GitHub + Streamlit, conta `resetconsultoria1`
 (login pelo Google). Não precisa instalar nada.
 
+> **Atenção:** o plano gratuito do Streamlit só permite **1 app privado por conta**,
+> e esse lugar já está ocupado pelo "App conf de classificações". Por isso este
+> repositório vai ser **público** — e a segurança fica por conta de uma **senha
+> guardada nos Secrets** (`APP_PASSWORD`), que não vai para o GitHub. O `users.yaml`
+> **não** deve ser enviado.
+
 ### Parte 1 — Subir os arquivos no GitHub
 1. Entrar em https://github.com com a conta `resetconsultoria1`.
 2. **+** (canto superior direito) → **New repository**.
    - Name: `conversor-extratos`
-   - Marcar **Private** (o `users.yaml` tem senha de usuário)
+   - Deixar **Public**
    - **Create repository**
 3. Clicar no link **"uploading an existing file"**.
-4. Arrastar da pasta `Conversor de extratos\` os arquivos:
-   `app.py`, `requirements.txt`, `users.yaml`, `README.md`
+4. Arrastar da pasta `Conversor de extratos\` **só estes 3 arquivos**:
+   `app.py`, `requirements.txt`, `README.md`
+   (⚠️ **não** subir o `users.yaml`)
 5. **Commit changes**.
 
 ### Parte 2 — Publicar no Streamlit
 1. Entrar em https://share.streamlit.io com **GitHub** (mesma conta).
-2. **Create app** → **Deploy a public app from GitHub**
-   (se pedir, **Authorize** o acesso aos repositórios privados).
+2. **Create app** → **Deploy a public app from GitHub**.
 3. Repository: `resetconsultoria1/conversor-extratos` · Branch: `main` · Main file: `app.py`
-4. **Advanced settings** → **Secrets** → colar:
+4. **Advanced settings** → **Secrets** → colar as duas linhas:
    ```toml
    ANTHROPIC_API_KEY = "sk-ant-..."
+   APP_PASSWORD = "escolha-uma-senha-forte"
    ```
-   (a chave está em `Curso Hastag\console.anthropic.com.txt` e na imagem `chave API .jpg`)
+   (a chave da API está em `Curso Hastag\console.anthropic.com.txt` e na imagem `chave API .jpg`)
 5. **Deploy** (~2–3 min). O endereço final é algo como
    `https://conversor-extratos-xxxx.streamlit.app`.
+
+Quem abrir o app digita a `APP_PASSWORD` para entrar. Para trocar a senha depois:
+**Manage app → Settings → Secrets**.
 
 ### Atualizar depois
 Editar o arquivo direto no GitHub (ícone de lápis → **Commit changes**): o Streamlit
@@ -73,16 +83,16 @@ e coloque a chave. Depois:
 streamlit run app.py
 ```
 
-## Usuários e senhas
+## Acesso (dois modos)
 
-Ficam em `users.yaml` (senha guardada como hash SHA-256, igual às outras ferramentas).
-Para adicionar alguém, gere o hash com:
+O app decide sozinho qual usar:
 
-```python
-import hashlib; print("sha256:" + hashlib.sha256("A_SENHA".encode()).hexdigest())
-```
-
-Deixe `senha_hash` em branco (`senha_hash:`) para a pessoa definir a senha no primeiro acesso.
+1. **Senha única** — se existir `APP_PASSWORD` nos Secrets, o login é só uma senha.
+   É o modo para **repositório público** (nada sensível no GitHub). Recomendado aqui.
+2. **Multiusuário** — se **não** houver `APP_PASSWORD`, ele usa o `users.yaml`
+   (hash SHA-256, igual às outras ferramentas). Só faz sentido em repositório privado.
+   Para adicionar alguém: `import hashlib; print("sha256:" + hashlib.sha256("A_SENHA".encode()).hexdigest())`
+   e cole em `senha_hash`. Deixe `senha_hash:` vazio para a pessoa definir no 1º acesso.
 
 ## Ajustes finos (topo do `app.py`)
 
